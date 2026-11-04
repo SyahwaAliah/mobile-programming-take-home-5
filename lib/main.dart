@@ -1,11 +1,15 @@
+/*
+  Nama : Syahwa Aliah Wandi
+  NIM  : 825240139
+  Tugas TakeHome 5
+*/
+
 import 'dart:convert';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-
-// run with: flutter run -d web-server --web-port=8081 --web-hostname=0.0.0.0
 
 // ===================== COLOR PALETTE =====================
 const Color darkRed = Color(0xFFA32638);
@@ -76,7 +80,6 @@ class Song {
     required this.previewUrl,
   });
 
-  // Parse one item from the iTunes Search API response
   factory Song.fromItunes(Map<String, dynamic> j) => Song(
     id: j['trackId'] ?? 0,
     title: j['trackName'] ?? 'Tanpa Judul',
@@ -89,7 +92,6 @@ class Song {
     previewUrl: j['previewUrl'] ?? '',
   );
 
-  // Parse a song saved in local storage
   factory Song.fromJson(Map<String, dynamic> j) => Song(
     id: j['id'],
     title: j['title'],
@@ -106,6 +108,28 @@ class Song {
     'album': album,
     'artwork': artwork,
     'previewUrl': previewUrl,
+  };
+}
+
+class Playlist {
+  final String id;
+  String name;
+  final List<Song> songs;
+
+  Playlist({required this.id, required this.name, required this.songs});
+
+  factory Playlist.fromJson(Map<String, dynamic> j) => Playlist(
+    id: j['id'],
+    name: j['name'],
+    songs: (j['songs'] as List)
+        .map((e) => Song.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'songs': songs.map((s) => s.toJson()).toList(),
   };
 }
 
@@ -126,6 +150,7 @@ class PlayerController extends ChangeNotifier {
 
   List<Song> favorites = [];
   List<Song> history = [];
+  List<Playlist> playlists = [];
   String name = 'Syahwa';
 
   Song? get current =>
@@ -135,6 +160,7 @@ class PlayerController extends ChangeNotifier {
     _prefs = await SharedPreferences.getInstance();
     favorites = _loadList('favorites');
     history = _loadList('history');
+    playlists = _loadPlaylists();
     name = _prefs!.getString('name') ?? name;
 
     _audio.onPlayerStateChanged.listen((s) {
@@ -169,6 +195,25 @@ class PlayerController extends ChangeNotifier {
     await _prefs?.setString(
       key,
       jsonEncode(list.map((s) => s.toJson()).toList()),
+    );
+  }
+
+  List<Playlist> _loadPlaylists() {
+    final raw = _prefs?.getString('playlists');
+    if (raw == null) return [];
+    try {
+      return (jsonDecode(raw) as List)
+          .map((e) => Playlist.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _savePlaylists() async {
+    await _prefs?.setString(
+      'playlists',
+      jsonEncode(playlists.map((p) => p.toJson()).toList()),
     );
   }
 
@@ -215,7 +260,6 @@ class PlayerController extends ChangeNotifier {
     if (queue.isEmpty) return;
     int n;
     if (shuffle && queue.length > 1) {
-      // pick a random song other than the current one, without dart:math
       final random = DateTime.now().microsecondsSinceEpoch % (queue.length - 1);
       n = (index + 1 + random) % queue.length;
     } else {
@@ -236,7 +280,6 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> prev() async {
     if (queue.isEmpty) return;
-    // if more than 3 seconds have played, restart the current song
     if (position.inSeconds > 3) {
       await seek(Duration.zero);
       return;
@@ -289,6 +332,58 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------- playlists ----------
+  Playlist? playlistById(String id) {
+    for (final p in playlists) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  bool inPlaylist(Playlist p, Song s) => p.songs.any((x) => x.id == s.id);
+
+  Playlist? createPlaylist(String n) {
+    final t = n.trim();
+    if (t.isEmpty) return null;
+    final p = Playlist(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: t,
+      songs: <Song>[],
+    );
+    playlists.insert(0, p);
+    _savePlaylists();
+    notifyListeners();
+    return p;
+  }
+
+  void renamePlaylist(Playlist p, String n) {
+    final t = n.trim();
+    if (t.isEmpty) return;
+    p.name = t;
+    _savePlaylists();
+    notifyListeners();
+  }
+
+  void deletePlaylist(Playlist p) {
+    playlists.removeWhere((x) => x.id == p.id);
+    _savePlaylists();
+    notifyListeners();
+  }
+
+  bool addToPlaylist(Playlist p, Song s) {
+    if (inPlaylist(p, s)) return false;
+    p.songs.add(s);
+    _savePlaylists();
+    notifyListeners();
+    return true;
+  }
+
+  void removeFromPlaylist(Playlist p, Song s) {
+    p.songs.removeWhere((x) => x.id == s.id);
+    _savePlaylists();
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     _audio.dispose();
@@ -296,15 +391,129 @@ class PlayerController extends ChangeNotifier {
   }
 }
 
-// Format a Duration as mm:ss
 String fmt(Duration d) {
   final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
   final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
   return '$m:$s';
 }
 
-// ===================== TRANSITION HELPER =====================
-// Entry animation: fade in + slight slide up, staggered by item index
+Future<String?> showNameDialog(
+  BuildContext context, {
+  required String title,
+  String initial = '',
+}) {
+  final c = TextEditingController(text: initial);
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: midGrey,
+      title: Text(title),
+      content: TextField(
+        controller: c,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'Nama playlist'),
+        onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Batal'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, c.text.trim()),
+          child: const Text('Simpan'),
+        ),
+      ],
+    ),
+  );
+}
+
+Future<void> showAddToPlaylistSheet(
+  BuildContext context,
+  PlayerController pc,
+  Song song,
+) {
+  final messenger = ScaffoldMessenger.of(context);
+  return showModalBottomSheet(
+    context: context,
+    backgroundColor: midGrey,
+    builder: (ctx) => ListenableBuilder(
+      listenable: pc,
+      builder: (_, __) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Tambah ke Playlist',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.add_circle_outline, color: darkRed),
+              title: const Text('Playlist baru'),
+              onTap: () async {
+                final n = await showNameDialog(ctx, title: 'Playlist Baru');
+                if (n == null) return;
+                final p = pc.createPlaylist(n);
+                if (p == null) return;
+                pc.addToPlaylist(p, song);
+                if (ctx.mounted) Navigator.pop(ctx);
+                messenger.showSnackBar(
+                  SnackBar(content: Text('Ditambahkan ke "${p.name}"')),
+                );
+              },
+            ),
+            if (pc.playlists.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(
+                  'Belum ada playlist.',
+                  style: TextStyle(color: lightGrey),
+                ),
+              )
+            else
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: pc.playlists.map((p) {
+                    final added = pc.inPlaylist(p, song);
+                    return ListTile(
+                      leading: const Icon(Icons.queue_music),
+                      title: Text(p.name, maxLines: 1),
+                      subtitle: Text(
+                        '${p.songs.length} lagu',
+                        style: const TextStyle(color: lightGrey),
+                      ),
+                      trailing: added
+                          ? const Icon(Icons.check, color: darkRed)
+                          : null,
+                      onTap: () {
+                        final ok = pc.addToPlaylist(p, song);
+                        Navigator.pop(ctx);
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              ok
+                                  ? 'Ditambahkan ke "${p.name}"'
+                                  : 'Lagu sudah ada di "${p.name}"',
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
 class FadeSlideIn extends StatelessWidget {
   final int index;
   final Widget child;
@@ -325,7 +534,7 @@ class FadeSlideIn extends StatelessWidget {
   }
 }
 
-// ===================== SHELL (NAV + MINI PLAYER) =====================
+// ===================== NAVIGATOR AND MINI PLAYER =====================
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
 
@@ -349,9 +558,14 @@ class _HomeShellState extends State<HomeShell> {
     super.dispose();
   }
 
+  Future<void> _createPlaylist() async {
+    final n = await showNameDialog(context, title: 'Playlist Baru');
+    if (n != null) pc.createPlaylist(n);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final titles = ['Cari Lagu', 'Favorit', 'Riwayat', 'Profil'];
+    final titles = ['Cari Lagu', 'Favorit', 'Playlist', 'Riwayat', 'Profil'];
     final pages = [
       SearchPage(pc: pc),
       SongListPage(
@@ -359,6 +573,7 @@ class _HomeShellState extends State<HomeShell> {
         source: () => pc.favorites,
         emptyText: 'Belum ada lagu favorit.\nTap ikon hati di lagu.',
       ),
+      PlaylistPage(pc: pc, onCreate: _createPlaylist),
       SongListPage(
         pc: pc,
         source: () => pc.history,
@@ -374,13 +589,19 @@ class _HomeShellState extends State<HomeShell> {
 
     return Scaffold(
       appBar: AppBar(
-        // title cross-fades when switching tabs
         title: AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: Text(titles[tab], key: ValueKey(tab)),
         ),
+        actions: [
+          if (tab == 2)
+            IconButton(
+              icon: const Icon(Icons.add),
+              tooltip: 'Playlist baru',
+              onPressed: _createPlaylist,
+            ),
+        ],
       ),
-      // IndexedStack keeps each page's state; each page fades in when selected
       body: IndexedStack(
         index: tab,
         children: List.generate(
@@ -395,7 +616,6 @@ class _HomeShellState extends State<HomeShell> {
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // mini player grows smoothly when the first song starts
           AnimatedSize(
             duration: const Duration(milliseconds: 250),
             curve: Curves.easeOut,
@@ -409,6 +629,10 @@ class _HomeShellState extends State<HomeShell> {
               NavigationDestination(
                 icon: Icon(Icons.favorite_border),
                 label: 'Favorit',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.queue_music),
+                label: 'Playlist',
               ),
               NavigationDestination(
                 icon: Icon(Icons.history),
@@ -431,18 +655,19 @@ class SongTile extends StatelessWidget {
   final PlayerController pc;
   final Song song;
   final VoidCallback onTap;
+  final VoidCallback? onRemove;
 
   const SongTile({
     super.key,
     required this.pc,
     required this.song,
     required this.onTap,
+    this.onRemove,
   });
 
   @override
   Widget build(BuildContext context) {
     final isActive = pc.current?.id == song.id;
-    // background color changes smoothly when the song becomes active
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
       color: isActive ? deepRed.withOpacity(0.35) : Colors.transparent,
@@ -477,18 +702,36 @@ class SongTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(color: lightGrey),
         ),
-        trailing: IconButton(
-          // heart icon zooms when toggled
-          icon: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
-            transitionBuilder: (c, a) => ScaleTransition(scale: a, child: c),
-            child: Icon(
-              pc.isFav(song) ? Icons.favorite : Icons.favorite_border,
-              key: ValueKey(pc.isFav(song)),
-              color: darkRed,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onRemove != null)
+              IconButton(
+                icon: const Icon(Icons.remove_circle_outline, color: lightGrey),
+                tooltip: 'Hapus dari playlist',
+                onPressed: onRemove,
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.playlist_add, color: lightGrey),
+                tooltip: 'Tambah ke playlist',
+                onPressed: () => showAddToPlaylistSheet(context, pc, song),
+              ),
+            IconButton(
+              // heart icon zooms when toggled
+              icon: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                transitionBuilder: (c, a) =>
+                    ScaleTransition(scale: a, child: c),
+                child: Icon(
+                  pc.isFav(song) ? Icons.favorite : Icons.favorite_border,
+                  key: ValueKey(pc.isFav(song)),
+                  color: darkRed,
+                ),
+              ),
+              onPressed: () => pc.toggleFav(song),
             ),
-          ),
-          onPressed: () => pc.toggleFav(song),
+          ],
         ),
       ),
     );
@@ -610,7 +853,7 @@ class _SearchPageState extends State<SearchPage> {
   }
 }
 
-// ===================== FAVORITES / HISTORY PAGE =====================
+// ===================== FAVORITES AND HISTORY PAGE =====================
 class SongListPage extends StatelessWidget {
   final PlayerController pc;
   final List<Song> Function() source;
@@ -664,7 +907,236 @@ class SongListPage extends StatelessWidget {
   }
 }
 
-// ===================== PROFILE =====================
+// ===================== PLAYLIST ====================
+class PlaylistCover extends StatelessWidget {
+  final Playlist playlist;
+  final double size;
+  const PlaylistCover({super.key, required this.playlist, this.size = 52});
+
+  @override
+  Widget build(BuildContext context) {
+    final placeholder = Container(
+      width: size,
+      height: size,
+      color: midGrey,
+      child: Icon(Icons.queue_music, size: size * 0.5, color: lightGrey),
+    );
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: playlist.songs.isEmpty
+          ? placeholder
+          : Image.network(
+              playlist.songs.first.artwork,
+              width: size,
+              height: size,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => placeholder,
+            ),
+    );
+  }
+}
+
+class PlaylistPage extends StatelessWidget {
+  final PlayerController pc;
+  final VoidCallback onCreate;
+  const PlaylistPage({super.key, required this.pc, required this.onCreate});
+
+  Future<void> _rename(BuildContext context, Playlist p) async {
+    final n = await showNameDialog(
+      context,
+      title: 'Ubah Nama Playlist',
+      initial: p.name,
+    );
+    if (n != null) pc.renamePlaylist(p, n);
+  }
+
+  Future<void> _delete(BuildContext context, Playlist p) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: midGrey,
+        title: const Text('Hapus Playlist'),
+        content: Text('Hapus playlist "${p.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Batal'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Hapus'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) pc.deletePlaylist(p);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: pc,
+      builder: (_, __) {
+        final list = pc.playlists;
+        if (list.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.queue_music, size: 64, color: lightGrey),
+                const SizedBox(height: 12),
+                const Text(
+                  'Belum ada playlist.',
+                  style: TextStyle(color: lightGrey),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(backgroundColor: darkRed),
+                  onPressed: onCreate,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Buat Playlist'),
+                ),
+              ],
+            ),
+          );
+        }
+        return ListView.builder(
+          itemCount: list.length,
+          itemBuilder: (_, i) {
+            final p = list[i];
+            return FadeSlideIn(
+              index: i,
+              child: ListTile(
+                leading: PlaylistCover(playlist: p),
+                title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                  '${p.songs.length} lagu',
+                  style: const TextStyle(color: lightGrey),
+                ),
+                trailing: PopupMenuButton<String>(
+                  color: midGrey,
+                  onSelected: (v) {
+                    if (v == 'rename') _rename(context, p);
+                    if (v == 'delete') _delete(context, p);
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'rename', child: Text('Ubah nama')),
+                    PopupMenuItem(value: 'delete', child: Text('Hapus')),
+                  ],
+                ),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        PlaylistDetailPage(pc: pc, playlistId: p.id),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class PlaylistDetailPage extends StatelessWidget {
+  final PlayerController pc;
+  final String playlistId;
+  const PlaylistDetailPage({
+    super.key,
+    required this.pc,
+    required this.playlistId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: pc,
+      builder: (context, _) {
+        final p = pc.playlistById(playlistId);
+        if (p == null) return const Scaffold(body: SizedBox());
+        return Scaffold(
+          appBar: AppBar(
+            title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.edit),
+                tooltip: 'Ubah nama',
+                onPressed: () async {
+                  final n = await showNameDialog(
+                    context,
+                    title: 'Ubah Nama Playlist',
+                    initial: p.name,
+                  );
+                  if (n != null) pc.renamePlaylist(p, n);
+                },
+              ),
+            ],
+          ),
+          body: p.songs.isEmpty
+              ? const Center(
+                  child: Text(
+                    'Playlist masih kosong.\nTap ikon + di daftar lagu untuk menambahkan.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: lightGrey),
+                  ),
+                )
+              : Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          PlaylistCover(playlist: p, size: 72),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${p.songs.length} lagu',
+                                  style: const TextStyle(color: lightGrey),
+                                ),
+                                const SizedBox(height: 8),
+                                FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: darkRed,
+                                  ),
+                                  onPressed: () => pc.playQueue(p.songs, 0),
+                                  icon: const Icon(Icons.play_arrow),
+                                  label: const Text('Putar Semua'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: p.songs.length,
+                        itemBuilder: (_, i) => FadeSlideIn(
+                          index: i,
+                          child: SongTile(
+                            pc: pc,
+                            song: p.songs[i],
+                            onTap: () => pc.playQueue(p.songs, i),
+                            onRemove: () => pc.removeFromPlaylist(p, p.songs[i]),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+          bottomNavigationBar: MiniPlayer(pc: pc),
+        );
+      },
+    );
+  }
+}
+
+// ===================== PROFILE USER =====================
 class ProfilePage extends StatelessWidget {
   final PlayerController pc;
   const ProfilePage({super.key, required this.pc});
@@ -742,6 +1214,8 @@ class ProfilePage extends StatelessWidget {
             children: [
               _stat('Favorit', pc.favorites.length, Icons.favorite),
               const SizedBox(width: 12),
+              _stat('Playlist', pc.playlists.length, Icons.queue_music),
+              const SizedBox(width: 12),
               _stat('Riwayat', pc.history.length, Icons.history),
             ],
           ),
@@ -783,7 +1257,6 @@ class ProfilePage extends StatelessWidget {
     );
   }
 
-  // Small statistic card; the number animates when it changes
   Widget _stat(String label, int n, IconData icon) => Expanded(
     child: Container(
       padding: const EdgeInsets.symmetric(vertical: 18),
@@ -811,7 +1284,7 @@ class ProfilePage extends StatelessWidget {
   );
 }
 
-// ===================== MINI PLAYER =====================
+// ===================== MINI PLAYER (PREVIEW) =====================
 class MiniPlayer extends StatelessWidget {
   final PlayerController pc;
   const MiniPlayer({super.key, required this.pc});
@@ -828,7 +1301,6 @@ class MiniPlayer extends StatelessWidget {
         return Material(
           color: deepRed,
           child: InkWell(
-            // full player slides up from the bottom
             onTap: () => Navigator.push(
               context,
               PageRouteBuilder(
@@ -913,7 +1385,6 @@ class PlayerPage extends StatelessWidget {
       builder: (context, _) {
         final s = pc.current;
         if (s == null) return const Scaffold(body: SizedBox());
-        // slider range without dart:math (minimum of 1 ms to avoid max = 0)
         final maxMs =
             (pc.duration.inMilliseconds > 0 ? pc.duration.inMilliseconds : 1)
                 .toDouble();
@@ -987,6 +1458,12 @@ class PlayerPage extends StatelessWidget {
                           ],
                         ),
                       ),
+                    ),
+                    IconButton(
+                      iconSize: 30,
+                      tooltip: 'Tambah ke playlist',
+                      icon: const Icon(Icons.playlist_add, color: Colors.white),
+                      onPressed: () => showAddToPlaylistSheet(context, pc, s),
                     ),
                     IconButton(
                       iconSize: 30,
